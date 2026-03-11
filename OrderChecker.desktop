@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=OrderChecker v5.0
+Comment=Поиск совпадений по реестру
+Exec=/opt/OrderChecker/OrderChecker-linux
+Icon=orderchecker
+Terminal=false
+Categories=Office;Finance;Development;
+StartupNotify=true
