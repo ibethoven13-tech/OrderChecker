@@ -1,0 +1,33 @@
+# OrderChecker v5.0 - Runtime Docker
+# Использование: docker build -f Dockerfile.run -t orderchecker .
+
+FROM ubuntu:22.04
+
+# Установка runtime зависимостей
+RUN apt update && apt install -y \
+    python3 \
+    python3-tk \
+    libxcb-xinerama0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Рабочая директория
+WORKDIR /app
+
+# Копируем собранный бинарник
+COPY dist/OrderChecker /app/OrderChecker
+RUN chmod +x /app/OrderChecker
+
+# Создаём пользователя
+RUN useradd -m -u 1000 orderchecker && \
+    chown -R orderchecker:orderchecker /app
+
+USER orderchecker
+
+# Настройка окружения
+ENV DISPLAY=:99
+
+# Скрипт запуска Xvfb и приложения
+COPY --chown=orderchecker:orderchecker entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]

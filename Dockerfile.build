@@ -1,0 +1,52 @@
+# OrderChecker v5.0 - Linux Build Docker
+# Использование: docker build -f Dockerfile.build -t orderchecker-build .
+
+FROM ubuntu:22.04
+
+# Установка системных зависимостей
+RUN apt update && apt install -y \
+    python3 \
+    python3-pip \
+    python3-tk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка Python зависимостей
+RUN pip3 install --no-cache-dir \
+    pyinstaller \
+    customtkinter \
+    pandas \
+    openpyxl \
+    python-docx \
+    pdfplumber \
+    requests
+
+# Рабочая директория
+WORKDIR /app
+
+# Копируем файлы
+COPY order_checker_v5_registry_learning.py .
+
+# Сборка PyInstaller
+RUN pyinstaller \
+    --onefile \
+    --windowed \
+    --name "OrderChecker" \
+    --hidden-import=tkinter \
+    --hidden-import=customtkinter \
+    --hidden-import=pandas \
+    --hidden-import=openpyxl \
+    --hidden-import=docx \
+    --hidden-import=pdfplumber \
+    --hidden-import=requests \
+    --clean \
+    --noconfirm \
+    order_checker_v5_registry_learning.py
+
+# Копируем результат в /dist для извлечения
+RUN mkdir -p /dist && cp dist/OrderChecker /dist/
+
+# Рабочая директория при запуске контейнера
+WORKDIR /dist
+
+# Команда по умолчанию
+CMD ["/bin/bash"]
