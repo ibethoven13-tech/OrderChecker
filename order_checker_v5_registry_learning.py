@@ -113,12 +113,13 @@ def start_ollama_if_needed() -> bool:
 
     try:
         if system == "Linux":
-            # На Linux пытаемся запустить ollama serve в фоновом режиме
+            # На Linux (Red Hat/Fedora/CentOS) используем nohup для фонового режима
+            # nohup работает на всех Linux дистрибутивах
             subprocess.Popen(
-                ["ollama", "serve"],
+                ["nohup", "ollama", "serve", "> /dev/null 2>&1", "&"],
+                shell=True,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
+                stderr=subprocess.DEVNULL
             )
         elif system == "Darwin":  # macOS
             subprocess.Popen(
@@ -137,14 +138,14 @@ def start_ollama_if_needed() -> bool:
             logger.warning(f"Неизвестная система: {system}")
             return False
 
-        # Ждём запуска
-        for _ in range(10):
+        # Ждём запуска - даём больше времени для Red Hat
+        for i in range(20):  # 10 секунд вместо 5
             time.sleep(0.5)
             if is_ollama_running():
                 logger.info("Ollama успешно запущен")
                 return True
 
-        logger.warning("Ollama не запустился за 5 секунд")
+        logger.warning("Ollama не запустился за 10 секунд")
         return False
 
     except FileNotFoundError:
