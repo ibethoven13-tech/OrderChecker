@@ -2493,31 +2493,26 @@ class OrderCheckerApp(ctk.CTk):
 
         # Создаем диалог
         export_dialog = ctk.CTkToplevel(self)
-        export_dialog.title("💾 Экспорт отчета")
+        export_dialog.title("Экспорт отчета")
         export_dialog.geometry("400x320")
-        export_dialog.transient(self)
-        export_dialog.grab_set()
 
         # Центрируем
-        export_dialog.update()
+        export_dialog.update_idletasks()
         x = (export_dialog.winfo_screenwidth() // 2) - 200
         y = (export_dialog.winfo_screenheight() // 2) - 160
-        export_dialog.geometry(f"400x320+{x}+{y}")
-
-        # Сохраняем ссылку на диалог для закрытия после экспорта
-        self._export_dialog_window = export_dialog
+        export_dialog.geometry(f"+{x}+{y}")
 
         # Заголовок
         ctk.CTkLabel(
             export_dialog,
-            text="💾 Выберите формат экспорта",
+            text="Выберите формат экспорта",
             font=("Arial", 14, "bold")
         ).pack(pady=15)
 
         # Кнопки форматов
         ctk.CTkButton(
             export_dialog,
-            text="📊 Excel (.xlsx)",
+            text="Excel (.xlsx)",
             command=lambda: self._export_excel(export_dialog),
             width=200,
             height=40,
@@ -2526,7 +2521,7 @@ class OrderCheckerApp(ctk.CTk):
 
         ctk.CTkButton(
             export_dialog,
-            text="📋 CSV (.csv)",
+            text="CSV (.csv)",
             command=lambda: self._export_csv(export_dialog),
             width=200,
             height=40,
@@ -2535,7 +2530,7 @@ class OrderCheckerApp(ctk.CTk):
 
         ctk.CTkButton(
             export_dialog,
-            text="📄 JSON (.json)",
+            text="JSON (.json)",
             command=lambda: self._export_json(export_dialog),
             width=200,
             height=40,
@@ -2554,37 +2549,57 @@ class OrderCheckerApp(ctk.CTk):
 
     def _export_excel(self, dialog):
         """Экспорт в Excel"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            initialfile=f"отчет_{timestamp}.xlsx",
-            filetypes=[("Excel", "*.xlsx")],
-            title="Экспорт в Excel",
-            parent=self
-        )
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                initialfile=f"отчет_{timestamp}.xlsx",
+                filetypes=[("Excel", "*.xlsx")],
+                title="Экспорт в Excel"
+            )
 
-        if filepath:
-            self._export_to_excel(filepath)
-            dialog.destroy()
-            messagebox.showinfo("Готово", "Отчет сохранен!")
+            if filepath:
+                self._export_to_excel(filepath)
+                dialog.destroy()
+                messagebox.showinfo("Готово", "Отчет сохранен!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка экспорта:\n{e}")
 
     def _export_csv(self, dialog):
         """Экспорт в CSV"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            initialfile=f"отчет_{timestamp}.csv",
-            filetypes=[("CSV", "*.csv")],
-            title="Экспорт в CSV",
-            parent=self
-        )
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                initialfile=f"отчет_{timestamp}.csv",
+                filetypes=[("CSV", "*.csv")],
+                title="Экспорт в CSV"
+            )
 
-        if filepath:
-            self._export_to_csv(filepath)
-            dialog.destroy()
-            messagebox.showinfo("Готово", "Отчет сохранен!")
+            if filepath:
+                self._export_to_csv(filepath)
+                dialog.destroy()
+                messagebox.showinfo("Готово", "Отчет сохранен!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка экспорта:\n{e}")
 
     def _export_json(self, dialog):
+        """Экспорт в JSON"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                initialfile=f"отчет_{timestamp}.json",
+                filetypes=[("JSON", "*.json")],
+                title="Экспорт в JSON"
+            )
+
+            if filepath:
+                self._export_to_json(filepath)
+                dialog.destroy()
+                messagebox.showinfo("Готово", "Отчет сохранен!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка экспорта:\n{e}")
         """Экспорт в JSON"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = filedialog.asksaveasfilename(
