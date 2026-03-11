@@ -30,6 +30,9 @@ import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess
+import platform
+import time
 
 # PDF поддержка
 try:
@@ -86,6 +89,86 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# ==================== OLLAMA АВТОЗАПУСК ====================
+
+def is_ollama_running() -> bool:
+    """Проверяет, запущен ли Ollama сервер"""
+    if not REQUESTS_SUPPORT:
+        return False
+    try:
+        response = requests.get(f"{OLLAMA_CONFIG['base_url']}/api/tags", timeout=2)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+def start_ollama_if_needed() -> bool:
+    """Запускает Ollama сервер, если он не запущен"""
+    if is_ollama_running():
+        logger.info("Ollama уже запущен")
+        return True
+
+    logger.info("Попытка запуска Ollama...")
+    system = platform.system()
+
+    try:
+        if system == "Linux":
+            # На Linux пытаемся запустить ollama serve в фоновом режиме
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+        elif system == "Darwin":  # macOS
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        elif system == "Windows":
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+        else:
+            logger.warning(f"Неизвестная система: {system}")
+            return False
+
+        # Ждём запуска
+        for _ in range(10):
+            time.sleep(0.5)
+            if is_ollama_running():
+                logger.info("Ollama успешно запущен")
+                return True
+
+        logger.warning("Ollama не запустился за 5 секунд")
+        return False
+
+    except FileNotFoundError:
+        logger.warning("Ollama не установлен в системе")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка запуска Ollama: {e}")
+        return False
+
+def check_ollama_model() -> bool:
+    """Проверяет, доступна ли модель"""
+    if not REQUESTS_SUPPORT:
+        return False
+    try:
+        response = requests.get(f"{OLLAMA_CONFIG['base_url']}/api/tags", timeout=5)
+        if response.status_code == 200:
+            models = response.json().get('models', [])
+            model_names = [m.get('name', '').split(':')[0] for m in models]
+            return OLLAMA_CONFIG['model'] in model_names
+        return False
+    except Exception:
+        return False
+
+# ==================== КОНЕЦ OLLAMA АВТОЗАПУСКА ====================
 
 
 # ==================== ВАЛИДАЦИЯ ДАННЫХ ====================
@@ -410,9 +493,10 @@ class OllamaClient:
         self.model = self.config.get('model', 'llama3.2')
         self.timeout = self.config.get('timeout', 30)
         self._available = None
+        self._auto_started = False
 
     def is_available(self) -> bool:
-        """Проверяет доступность Ollama"""
+        """Проверяет доступность Ollama и запускает если нужно"""
         if self._available is not None:
             return self._available
 
@@ -420,13 +504,31 @@ class OllamaClient:
             self._available = False
             return False
 
+        # Проверяем, запущен ли Ollama
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            self._available = response.status_code == 200
-            return self._available
+            response = requests.get(f"{self.base_url}/api/tags", timeout=2)
+            if response.status_code == 200:
+                self._available = True
+                return True
         except Exception:
-            self._available = False
-            return False
+            pass
+
+        # Если не запущен и ещё не пытались запустить - пробуем
+        if not self._auto_started:
+            self._auto_started = True
+            logger.info("Ollama не запущен, пытаемся запустить автоматически...")
+            if start_ollama_if_needed():
+                # Проверяем снова после запуска
+                try:
+                    response = requests.get(f"{self.base_url}/api/tags", timeout=2)
+                    if response.status_code == 200:
+                        self._available = True
+                        return True
+                except Exception:
+                    pass
+
+        self._available = False
+        return False
 
     def extract_order_data(self, text: str, filename: str = "") -> Dict[str, Any]:
         """Извлекает данные заказа с помощью LLM"""
@@ -2818,6 +2920,10 @@ class OrderCheckerApp(ctk.CTk):
 
 
 def main():
+    # Автозапуск Ollama при старте приложения
+    logger.info("Запуск OrderChecker...")
+    start_ollama_if_needed()
+
     app = OrderCheckerApp()
     app.mainloop()
 

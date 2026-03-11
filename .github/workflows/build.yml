@@ -3,6 +3,8 @@ name: Build OrderChecker Linux
 on:
   workflow_dispatch:  # Запуск вручную
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   pull_request:
@@ -10,21 +12,21 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller customtkinter pandas openpyxl python-docx pdfplumber requests
-        
+
     - name: Build with PyInstaller
       run: |
         pyinstaller \
@@ -38,22 +40,26 @@ jobs:
           --hidden-import=docx \
           --hidden-import=pdfplumber \
           --hidden-import=requests \
+          --hidden-import=subprocess \
+          --hidden-import=platform \
+          --hidden-import=logging \
           --clean \
           --noconfirm \
           order_checker_v5_registry_learning.py
-          
+
     - name: Check build result
       run: |
         ls -lh dist/
         file dist/OrderChecker-linux
-        
+        chmod +x dist/OrderChecker-linux
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: OrderChecker-linux-x64
         path: dist/OrderChecker-linux
         retention-days: 90
-        
+
     - name: Create Release (if tagged)
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
