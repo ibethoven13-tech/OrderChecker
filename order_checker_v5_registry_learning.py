@@ -2401,6 +2401,9 @@ class OrderCheckerApp(ctk.CTk):
         y = (export_dialog.winfo_screenheight() // 2) - 160
         export_dialog.geometry(f"400x320+{x}+{y}")
 
+        # Сохраняем ссылку на диалог для закрытия после экспорта
+        self._export_dialog_window = export_dialog
+
         # Заголовок
         ctk.CTkLabel(
             export_dialog,
@@ -2412,7 +2415,7 @@ class OrderCheckerApp(ctk.CTk):
         ctk.CTkButton(
             export_dialog,
             text="📊 Excel (.xlsx)",
-            command=self._export_excel,
+            command=lambda: self._export_excel(export_dialog),
             width=200,
             height=40,
             font=("Arial", 11)
@@ -2421,7 +2424,7 @@ class OrderCheckerApp(ctk.CTk):
         ctk.CTkButton(
             export_dialog,
             text="📋 CSV (.csv)",
-            command=self._export_csv,
+            command=lambda: self._export_csv(export_dialog),
             width=200,
             height=40,
             font=("Arial", 11)
@@ -2430,7 +2433,7 @@ class OrderCheckerApp(ctk.CTk):
         ctk.CTkButton(
             export_dialog,
             text="📄 JSON (.json)",
-            command=self._export_json,
+            command=lambda: self._export_json(export_dialog),
             width=200,
             height=40,
             font=("Arial", 11)
@@ -2446,46 +2449,52 @@ class OrderCheckerApp(ctk.CTk):
             fg_color="gray"
         ).pack(pady=(15, 10))
 
-    def _export_excel(self):
+    def _export_excel(self, dialog):
         """Экспорт в Excel"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             initialfile=f"отчет_{timestamp}.xlsx",
             filetypes=[("Excel", "*.xlsx")],
-            title="Экспорт в Excel"
+            title="Экспорт в Excel",
+            parent=self
         )
 
         if filepath:
             self._export_to_excel(filepath)
+            dialog.destroy()
             messagebox.showinfo("Готово", "Отчет сохранен!")
 
-    def _export_csv(self):
+    def _export_csv(self, dialog):
         """Экспорт в CSV"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = filedialog.asksaveasfilename(
             defaultextension=".csv",
             initialfile=f"отчет_{timestamp}.csv",
             filetypes=[("CSV", "*.csv")],
-            title="Экспорт в CSV"
+            title="Экспорт в CSV",
+            parent=self
         )
 
         if filepath:
             self._export_to_csv(filepath)
+            dialog.destroy()
             messagebox.showinfo("Готово", "Отчет сохранен!")
 
-    def _export_json(self):
+    def _export_json(self, dialog):
         """Экспорт в JSON"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = filedialog.asksaveasfilename(
             defaultextension=".json",
             initialfile=f"отчет_{timestamp}.json",
             filetypes=[("JSON", "*.json")],
-            title="Экспорт в JSON"
+            title="Экспорт в JSON",
+            parent=self
         )
 
         if filepath:
             self._export_to_json(filepath)
+            dialog.destroy()
             messagebox.showinfo("Готово", "Отчет сохранен!")
 
     def _export_to_excel(self, filepath: str):
