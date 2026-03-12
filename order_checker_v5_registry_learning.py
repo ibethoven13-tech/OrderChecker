@@ -1351,8 +1351,8 @@ class PatternExtractor:
 
     @staticmethod
     def _is_order_number(value: str) -> bool:
-        """Проверяет номер заказа"""
-        order_pattern = r'\d{8}'
+        """Проверяет номер заказа (6-10 цифр)"""
+        order_pattern = r'\d{6,10}'
         return bool(re.match(order_pattern, value.strip()))
 
     @staticmethod
@@ -1508,19 +1508,29 @@ class RegistryBasedParser:
         Returns:
             (список_номеров_заказов, словарь_остальных_данных)
         """
-        # Сначала находим ВСЕ номера заказов (8 цифр)
+        # Сначала находим ВСЕ номера заказов из паттернов реестра
         order_numbers = []
-        for match in re.finditer(r'\d{8}', text):
-            order_num = match.group()
-            # Проверяем что это действительно номер заказа (не просто дата)
-            if self._is_valid_order_number(order_num, text, match.start()):
-                order_numbers.append((order_num, match.start()))
+        order_number_patterns = [p for p in self.patterns if p.isdigit() and len(p) >= 6]
+
+        if order_number_patterns:
+            # Ищем по конкретным паттернам из реестра
+            for pattern in order_number_patterns:
+                escaped_pattern = re.escape(pattern)
+                for match in re.finditer(escaped_pattern, text):
+                    if self._is_valid_order_number(pattern, text, match.start()):
+                        order_numbers.append((pattern, match.start()))
+        else:
+            # Fallback: ищем любые 6-10 цифр подряд
+            for match in re.finditer(r'\d{6,10}', text):
+                order_num = match.group()
+                if self._is_valid_order_number(order_num, text, match.start()):
+                    order_numbers.append((order_num, match.start()))
 
         # Затем ищем остальные паттерны
         other_data = {}
         for pattern in self.patterns:
             # Пропускаем номера заказов (уже нашли)
-            if pattern.isdigit() and len(pattern) == 8:
+            if pattern in order_number_patterns:
                 continue
 
             escaped_pattern = re.escape(pattern)
