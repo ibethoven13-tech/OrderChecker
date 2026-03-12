@@ -433,10 +433,10 @@ class BaseParser:
 
     PATTERNS = {
         'order_number': [
-            r'Заказ-наряд\s*№\s*(\d{8})',
-            r'РЕМОНТНЫЙ\s*ЗАКАЗ\s*№\s*(\d{8})',
-            r'Счет-Заказ\s*№\s*(\d{8})',
-            r'заказ\s*[№N]?\s*(\d{8})',
+            r'Заказ-наряд\s*№\s*(\d{4,10})',
+            r'РЕМОНТНЫЙ\s*ЗАКАЗ\s*№\s*(\d{4,10})',
+            r'Счет-Заказ\s*№\s*(\d{4,10})',
+            r'заказ\s*[№N]?\s*(\d{4,10})',
         ],
         'vin': [
             r'VIN[:\s]*([A-HJ-NPR-Z0-9]{17})',
@@ -953,7 +953,7 @@ class PDFParser(BaseParser):
             lines = text.split('\n')
             for line in lines:
                 if any(kw in line.upper() for kw in ['ЗАКАЗ', 'РЕМОНТ', 'НАРЯД']):
-                    match = re.search(r'\b(\d{8})\b', line)
+                    match = re.search(r'\b(\d{4,10})\b', line)
                     if match and not (match.group(1).startswith('20') or match.group(1).startswith('19')):
                         order_numbers.append(match.group(1))
 
@@ -1021,7 +1021,7 @@ class ExcelParser(BaseParser):
                 for idx, row in df.iterrows():
                     excel_row = idx + header_row + 2  # +1 для 0-based, +1 для заголовка
                     order_num = str(row.get(order_col, ''))
-                    order_num_match = re.search(r'(\d{8})', order_num)
+                    order_num_match = re.search(r'(\d{4,10})', order_num)
                     if order_num_match:
                         orders.append({
                             'order_number': order_num_match.group(1),
@@ -1082,7 +1082,7 @@ class CSVParser(BaseParser):
                 for idx, row in df.iterrows():
                     csv_row = idx + 2  # +1 для 0-based, +1 для заголовка
                     order_num = str(row.get(order_col, ''))
-                    order_num_match = re.search(r'(\d{8})', order_num)
+                    order_num_match = re.search(r'(\d{4,10})', order_num)
                     if order_num_match:
                         orders.append({
                             'order_number': order_num_match.group(1),
@@ -1763,20 +1763,20 @@ class RegistryChecker:
 
             if order_col is not None:
                 # Используем определённую колонку
-                df['order_number'] = df.iloc[:, order_col].astype(str).str.extract(r'(\d{8})')[0]
+                df['order_number'] = df.iloc[:, order_col].astype(str).str.extract(r'(\d{4,10})')[0]
             else:
                 # Fallback: ищем колонку по содержимому
                 for col_idx in range(min(len(df.columns), 10)):
-                    sample_values = df.iloc[:min(50, len(df)), col_idx].astype(str).str.extract(r'(\d{8})')[0]
+                    sample_values = df.iloc[:min(50, len(df)), col_idx].astype(str).str.extract(r'(\d{4,10})')[0]
                     if sample_values.notna().sum() > 10:  # Если нашли >10 номеров заказа
-                        df['order_number'] = df.iloc[:, col_idx].astype(str).str.extract(r'(\d{8})')[0]
+                        df['order_number'] = df.iloc[:, col_idx].astype(str).str.extract(r'(\d{4,10})')[0]
                         order_col = col_idx
                         break
 
             # Если всё ещё не нашли - пробуем все колонки
             if 'order_number' not in df.columns or df['order_number'].isna().all():
                 for col in df.columns:
-                    extracted = df[col].astype(str).str.extract(r'(\d{8})')[0]
+                    extracted = df[col].astype(str).str.extract(r'(\d{4,10})')[0]
                     if extracted.notna().sum() > 5:
                         df['order_number'] = extracted
                         break
@@ -1835,7 +1835,7 @@ class RegistryChecker:
         df = pd.read_excel(registry_path, sheet_name='Лист1', header=2)
         df['excel_row'] = df.index + 4
         original_order_col = df.columns[1]
-        df['order_number'] = df.iloc[:, 1].astype(str).str.extract(r'(\d{8})')[0]
+        df['order_number'] = df.iloc[:, 1].astype(str).str.extract(r'(\d{4,10})')[0]
 
         self.df = df[['order_number', original_order_col, 'excel_row',
                        df.columns[2], df.columns[3], df.columns[4], df.columns[6]]].copy()
