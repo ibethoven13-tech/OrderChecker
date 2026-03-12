@@ -988,61 +988,65 @@ class ExcelParser(BaseParser):
         self.filepath = Path(filepath)
 
     def parse(self) -> List[Dict[str, Any]]:
+        """Извлекает данные из Excel файла"""
         orders = []
 
         try:
-            # Пытаемся определить структуру
             df = pd.read_excel(self.filepath, sheet_name=0, header=None, dtype=str)
+            text = df.to_string()
 
-            # Ищем строку заголовка по ключевым словам
-            header_row = 0
-            for idx, row in df.iterrows():
-                row_text = ' '.join([str(v) for v in row.values]).lower()
-                if any(kw in row_text for kw in ['номер', 'заказ', 'vin', 'гос']):
-                    header_row = idx
-                    break
+            print(f"    📁 Excel: {self.filepath.name}")
 
-            # Перечитываем с правильным заголовком
-            df = pd.read_excel(self.filepath, sheet_name=0, header=header_row, dtype=str)
+            # Извлекаю данные из документа
+            doc_vin = None
+            doc_plate = None
+            doc_date = None
+            doc_amount = None
 
-            # Ищем колонку с номерами заказов
-            order_col = None
-            for col in df.columns:
-                col_str = str(col).lower()
-                if 'номер' in col_str or 'заказ' in col_str:
-                    order_col = col
-                    break
+            # VIN
+            vins = re.findall(r'[A-HJ-NPR-Z0-9]{17}', text, re.IGNORECASE)
+            if vins:
+                doc_vin = vins[0].upper()
 
-            # Если не нашли по названию, берем вторую колонку
-            if order_col is None and len(df.columns) > 1:
-                order_col = df.columns[1]
+            # Госномер
+            plates = re.findall(r'[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}', text)
+            if plates:
+                doc_plate = plates[0].upper()
 
-            if order_col is not None:
-                for idx, row in df.iterrows():
-                    excel_row = idx + header_row + 2  # +1 для 0-based, +1 для заголовка
-                    order_num = str(row.get(order_col, ''))
-                    order_num_match = re.search(r'(\d{4,10})', order_num)
-                    if order_num_match:
-                        orders.append({
-                            'order_number': order_num_match.group(1),
-                            'date_open': str(row.get('Дата', row.get('дата', '')))[:10],
-                            'date_close': None,
-                            'vin': str(row.get('VIN', '')),
-                            'plate': str(row.get('Гос', row.get('Гос. номер', row.get('гос. номер', '')))),
-                            'model': str(row.get('Модель', row.get('модель', ''))),
-                            'amount': str(row.get('Сумма', row.get('сумма', ''))),
-                            'source_info': {
-                                'order_number': f'Строка {excel_row}',
-                                'date_open': f'Строка {excel_row}',
-                                'vin': f'Строка {excel_row}',
-                                'plate': f'Строка {excel_row}',
-                                'model': f'Строка {excel_row}',
-                                'amount': f'Строка {excel_row}'
-                            }
-                        })
+            # Дата
+            dates = re.findall(r'\b\d{2}\.\d{2}.\d{4}\b', text)
+            if not dates:
+                dates = re.findall(r'\b\d{4}-\d{2}-\d{2}\b', text)
+            if dates:
+                doc_date = dates[0]
+
+            # Сумма
+            amounts = re.findall(r'\b\d{1,6}\.\d{2}\b', text)
+            if amounts:
+                doc_amount = amounts[0]
+
+            order = {
+                'order_number': None,  # Заполнится при сверке с реестром
+                'date_open': doc_date,
+                'date_close': None,
+                'vin': doc_vin,
+                'plate': doc_plate,
+                'model': None,
+                'amount': doc_amount,
+                'source_info': {
+                    'order_number': '📋 Документ',
+                    'date_open': '📋 Документ',
+                    'vin': '📋 Документ',
+                    'plate': '📋 Документ',
+                    'model': '📋 Документ',
+                    'amount': '📋 Документ'
+                }
+            }
+
+            orders.append(order)
 
         except Exception as e:
-            print(f"Ошибка чтения Excel: {e}")
+            print(f"    ❌ Ошибка: {e}")
 
         return orders
 
@@ -2242,46 +2246,114 @@ class RegistryChecker:
         return "Стандартная структура"
 
     def check_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """Проверяет заказ по реестру
+
+        Логика:
+        1. Если есть order_number → ищет по нему
+        2. Если НЕТ order_number → ищет по VIN/госномеру
+        """
         order_num = order.get('order_number')
+        doc_vin = order.get('vin')
+        doc_plate = order.get('plate')
 
-        if not order_num:
-            return {'found': False, 'reason': 'Нет номера заказа'}
+        # Случай 1: ЕСТЬ номер заказа — ищем по нему
+        if order_num:
+            matches = self.df[self.df['order_number'] == order_num]
 
-        matches = self.df[self.df['order_number'] == order_num]
+            if len(matches) == 0:
+                # Не нашли по номеру — пробуем по VIN/госномеру
+                return self._check_by_vin_plate(order)
 
-        if len(matches) == 0:
-            return {'found': False, 'reason': 'Не найден в реестре'}
+            registry_record = matches.iloc[0]
 
-        registry_record = matches.iloc[0]
+            result = {
+                'found': True,
+                'sheet': self.structure_info.get('sheet_name', 'Лист1') if self.structure_info else 'Лист1',
+                'row': int(registry_record['excel_row']),
+                'registry_order': registry_record['original_order'],
+                'registry_date': str(registry_record['date'])[:10],
+                'registry_vin': registry_record['vin'],
+                'registry_plate': registry_record['plate'],
+                'service_type': registry_record['service_type'],
+                'matches': {'order_number': True}
+            }
 
-        result = {
-            'found': True,
-            'sheet': self.structure_info.get('sheet_name', 'Лист1') if self.structure_info else 'Лист1',
-            'row': int(registry_record['excel_row']),
-            'registry_order': registry_record['original_order'],
-            'registry_date': str(registry_record['date'])[:10],
-            'registry_vin': registry_record['vin'],
-            'registry_plate': registry_record['plate'],
-            'service_type': registry_record['service_type'],
-            'matches': {'order_number': True}
-        }
+            if doc_vin:
+                result['matches']['vin'] = doc_vin == result['registry_vin']
 
-        if order.get('vin'):
-            result['matches']['vin'] = order['vin'] == result['registry_vin']
+            if doc_plate:
+                result['matches']['plate'] = doc_plate == result['registry_plate']
 
-        if order.get('plate'):
-            result['matches']['plate'] = order['plate'] == result['registry_plate']
+            if order.get('date_open'):
+                try:
+                    order_date = datetime.strptime(order['date_open'], '%d.%m.%Y')
+                    reg_date = pd.to_datetime(registry_record['date'])
+                    result['matches']['date'] = order_date.date() == reg_date.date()
+                except:
+                    result['matches']['date'] = None
 
-        if order.get('date_open'):
-            try:
-                order_date = datetime.strptime(order['date_open'], '%d.%m.%Y')
-                reg_date = pd.to_datetime(registry_record['date'])
-                result['matches']['date'] = order_date.date() == reg_date.date()
-            except:
-                result['matches']['date'] = None
+            result['all_match'] = all(v is True for v in result['matches'].values() if v is not None)
+            return result
 
-        result['all_match'] = all(v is True for v in result['matches'].values())
-        return result
+        # Случай 2: НЕТ номера заказа — ищем только по VIN/госномеру
+        return self._check_by_vin_plate(order)
+
+    def _check_by_vin_plate(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """Ищет заказ по VIN или госномеру"""
+        doc_vin = order.get('vin')
+        doc_plate = order.get('plate')
+
+        if not doc_vin and not doc_plate:
+            return {'found': False, 'reason': 'Нет данных для сверки (нет VIN, нет госномера)'}
+
+        # Ищем по VIN
+        if doc_vin:
+            for idx, row in self.df.iterrows():
+                # Проверяю все колонки на наличие VIN
+                for col in self.df.columns:
+                    cell_value = str(row[col]).upper()
+                    if doc_vin in cell_value:
+                        # НАШЛИ! Берём номер заказа из этой строки
+                        order_num = str(row['order_number']) if 'order_number' in row else None
+                        if not order_num:
+                            order_num = f"VIN-{doc_vin[:6]}"
+
+                        return {
+                            'found': True,
+                            'sheet': self.structure_info.get('sheet_name', 'Лист1') if self.structure_info else 'Лист1',
+                            'row': int(row.get('excel_row', idx)),
+                            'registry_order': order_num,
+                            'registry_vin': doc_vin,
+                            'registry_plate': row.get('plate', ''),
+                            'service_type': row.get('service_type', ''),
+                            'matches': {'vin': True},
+                            'all_match': False  # Не полное совпадение, но найден
+                        }
+
+        # Ищем по госномеру
+        if doc_plate:
+            for idx, row in self.df.iterrows():
+                for col in self.df.columns:
+                    cell_value = str(row[col]).upper().replace(' ', '')
+                    doc_plate_clean = doc_plate.replace(' ', '')
+                    if doc_plate_clean in cell_value:
+                        order_num = str(row['order_number']) if 'order_number' in row else None
+                        if not order_num:
+                            order_num = f"PLATE-{doc_plate_clean[:4]}"
+
+                        return {
+                            'found': True,
+                            'sheet': self.structure_info.get('sheet_name', 'Лист1') if self.structure_info else 'Лист1',
+                            'row': int(row.get('excel_row', idx)),
+                            'registry_order': order_num,
+                            'registry_vin': row.get('vin', ''),
+                            'registry_plate': doc_plate,
+                            'service_type': row.get('service_type', ''),
+                            'matches': {'plate': True},
+                            'all_match': False
+                        }
+
+        return {'found': False, 'reason': 'Не найден по VIN/госномеру'}
 
     def _train_on_registry(self):
         """Обучает паттерны на основе данных реестра"""
