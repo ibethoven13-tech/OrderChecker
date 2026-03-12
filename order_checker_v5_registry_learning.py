@@ -1509,54 +1509,68 @@ class RegistryBasedParser:
     def _find_match_in_registry(self, document_data: Dict[str, Any], file_order: str) -> Optional[Dict[str, Any]]:
         """Ищет совпадение в реестре по всем полям
 
-        Логика:
-        1. Если есть номер из файла — ищем СНАЧАЛА его
-        2. Потом сверяем VIN/plate для подтверждения
+        Умная логика:
+        1. Автоопределяет типы колонок (номер, VIN, госномер, дата, сумма)
+        2. Ищет номер из файла ТОЛЬКО в колонках с номерами заказов
+        3. Подтверждает совпадением VIN/госномера
         """
         if not hasattr(self, 'registry_df') or self.registry_df is None:
             if file_order:
                 return self._create_order_from_document(document_data, file_order)
             return None
 
-        # ПРИОРИТЕТ: ищем строку с номером из файла
-        if file_order:
-            for idx, row in self.registry_df.iterrows():
-                # Проверяем все колонки на наличие номера заказа
-                for col in self.registry_df.columns:
-                    cell_value = str(row[col])
-                    # Проверяем точное совпадение или часть значения
-                    if file_order in cell_value:
-                        # Нашли строку с этим номером!
-                        print(f"  ✅ Номер {file_order} найден в реестре (строка {idx})")
+        # 1. Автоопределяю типы колонок
+        column_types = self._detect_column_types()
 
-                        # Теперь сверяем VIN/plate для подтверждения
-                        score = 20  # За сам факт нахождения номера
-                        matched_fields = {'file_order': file_order}
+        # 2. ПРИОРИТЕТ: ищем строку с номером из файла
+        if file_order:
+            print(f"  🔍 Ищу номер {file_order} в колонках с номерами заказов...")
+
+            # Колонки где искать номера заказов
+            order_columns = [col for col, types in column_types.items() if 'order' in types]
+
+            if not order_columns:
+                print(f"  ⚠️ Колонки с номерами не найдены, ищу во всех колонках")
+                order_columns = self.registry_df.columns
+
+            for idx, row in self.registry_df.iterrows():
+                # Ищем номер только в соответствующих колонках
+                for col in order_columns:
+                    cell_value = str(row[col]).strip()
+                    # Точное совпадение номера (не часть другого числа)
+                    if cell_value == file_order or (len(cell_value) <= 8 and file_order in cell_value):
+                        print(f"    ✅ Найден в колонке '{col}' строка {idx}")
+
+                        # Подтверждаем VIN/госномером
+                        score = 20
+                        matched_fields = {'file_order': file_order, 'source_col': col}
 
                         # Проверяем VIN
                         if 'vin' in document_data and document_data['vin']:
                             doc_vin = document_data['vin']
-                            # Проверяем есть ли VIN в этой же строке
-                            for col2 in self.registry_df.columns:
-                                cell_val = str(row[col2]).upper()
-                                if doc_vin in cell_val:
-                                    score += 50
-                                    matched_fields['vin'] = doc_vin
-                                    print(f"    🔑 VIN подтверждён: {doc_vin}")
-                                    break
+                            vin_columns = [col for col, types in column_types.items() if 'vin' in types]
+                            if vin_columns:
+                                for vin_col in vin_columns:
+                                    cell_val = str(row[vin_col]).upper()
+                                    if doc_vin in cell_val:
+                                        score += 50
+                                        matched_fields['vin'] = doc_vin
+                                        print(f"      🔑 VIN подтверждён в '{vin_col}'")
+                                        break
 
                         # Проверяем госномер
                         if 'plate' in document_data and document_data['plate']:
                             doc_plate = document_data['plate'].upper().replace(' ', '')
-                            for col2 in self.registry_df.columns:
-                                cell_val = str(row[col2]).upper().replace(' ', '')
-                                if doc_plate.replace(' ', '') in cell_val:
-                                    score += 30
-                                    matched_fields['plate'] = doc_plate
-                                    print(f"    🚗 Госномер подтверждён: {doc_plate}")
-                                    break
+                            plate_columns = [col for col, types in column_types.items() if 'plate' in types]
+                            if plate_columns:
+                                for plate_col in plate_columns:
+                                    cell_val = str(row[plate_col]).upper().replace(' ', '')
+                                    if doc_plate.replace(' ', '') in cell_val:
+                                        score += 30
+                                        matched_fields['plate'] = doc_plate
+                                        print(f"      🚗 Госномер подтверждён в '{plate_col}'")
+                                        break
 
-                        # Достаточно совпадений!
                         if score >= 20:
                             # Формируем заказ
                             order = {
@@ -1565,7 +1579,6 @@ class RegistryBasedParser:
                                 'matched_fields': matched_fields
                             }
 
-                            # Добавляем данные из документа
                             if 'vin' in document_data:
                                 order['vin'] = document_data['vin']
                             if 'plate' in document_data:
@@ -1577,9 +1590,60 @@ class RegistryBasedParser:
 
                             return order
 
-        # Если номер из файла не найден в реестре — пробуем по VIN/plate
-        print(f"  ⚠️ Номер {file_order} не найден в реестре, пробую по VIN/plate...")
+        # 3. Fallback: по VIN/госномеру
+        if 'vin' in document_data or 'plate' in document_data:
+            print(f"  🔍 Номер не найден, пробую по VIN/госномеру...")
+            return self._find_by_vin_plate(document_data, file_order, column_types)
 
+        # 4. Ничего не найден
+        if file_order:
+            print(f"  ⚠️ Совпадений нет, использую номер из файла")
+            return self._create_order_from_document(document_data, file_order)
+
+        return None
+
+    def _detect_column_types(self) -> Dict[str, set]:
+        """Автоопределяет типы колонок в реестре"""
+        column_types = {}
+
+        for col in self.registry_df.columns:
+            types = set()
+            sample_values = self.registry_df[col].dropna().head(20).tolist()
+
+            for val in sample_values:
+                val_str = str(val).strip()
+                if not val_str or val_str.lower() in ['nan', 'none']:
+                    continue
+
+                # Номер заказа (4-8 цифр, не часть VIN)
+                if re.match(r'^\d{4,8}$', val_str):
+                    # Проверяем что это не VIN
+                    if not re.match(r'^[A-HJ-NPR-Z0-9]{17}$', val_str):
+                        types.add('order')
+
+                # VIN код
+                if re.search(r'[A-HJ-NPR-Z0-9]{17}', val_str):
+                    types.add('vin')
+
+                # Госномер
+                if re.search(r'[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}', val_str):
+                    types.add('plate')
+
+                # Дата
+                if re.search(r'\d{4}-\d{2}-\d{2}', val_str):
+                    types.add('date')
+
+                # Сумма
+                if re.search(r'\d+\.\d{2}', val_str):
+                    types.add('amount')
+
+            if types:
+                column_types[col] = types
+
+        return column_types
+
+    def _find_by_vin_plate(self, document_data: Dict[str, Any], file_order: str, column_types: Dict[str, set]) -> Optional[Dict[str, Any]]:
+        """Ищет по VIN или госномеру с учётом типов колонок"""
         best_match = None
         best_score = 0
 
@@ -1587,31 +1651,40 @@ class RegistryBasedParser:
             score = 0
             matched_fields = {}
 
-            # Сверяем VIN
+            # VIN
             if 'vin' in document_data and document_data['vin']:
                 doc_vin = document_data['vin']
-                for col in self.registry_df.columns:
-                    cell_value = str(row[col]).upper()
-                    if doc_vin in cell_value:
-                        score += 50
-                        matched_fields['vin'] = doc_vin
-                        break
+                vin_columns = [col for col, types in column_types.items() if 'vin' in types]
+                if vin_columns:
+                    for col in vin_columns:
+                        cell_value = str(row[col]).upper()
+                        if doc_vin in cell_value:
+                            score += 50
+                            matched_fields['vin'] = doc_vin
+                            break
 
-            # Сверяем госномер
+            # Госномер
             if 'plate' in document_data and document_data['plate']:
                 doc_plate = document_data['plate'].upper().replace(' ', '')
-                for col in self.registry_df.columns:
-                    cell_value = str(row[col]).upper().replace(' ', '')
-                    if doc_plate.replace(' ', '') in cell_value:
-                        score += 30
-                        matched_fields['plate'] = doc_plate
-                        break
+                plate_columns = [col for col, types in column_types.items() if 'plate' in types]
+                if plate_columns:
+                    for col in plate_columns:
+                        cell_value = str(row[col]).upper().replace(' ', '')
+                        if doc_plate.replace(' ', '') in cell_value:
+                            score += 30
+                            matched_fields['plate'] = doc_plate
+                            break
 
-            if score >= 50:  # Минимум VIN или госномер
+            if score >= 50:
                 if score > best_score:
                     best_score = score
-                    # Берём номер заказа из этой строки
-                    order_num = str(row['Номер ЗН ']) if 'Номер ЗН ' in row else file_order
+                    # Берём номер заказа из колонки с номерами
+                    order_columns = [col for col, types in column_types.items() if 'order' in types]
+                    if order_columns:
+                        order_num = str(row[order_columns[0]]).strip()
+                    else:
+                        order_num = file_order
+
                     best_match = {
                         'order_number': order_num,
                         'match_score': score,
@@ -1631,11 +1704,6 @@ class RegistryBasedParser:
                 order['amount'] = document_data['amounts'][0]
 
             return order
-
-        # Ничего не нашли — возвращаем хотя бы номер из файла
-        if file_order:
-            print(f"  ⚠️ Совпадений нет, использую номер из файла: {file_order}")
-            return self._create_order_from_document(document_data, file_order)
 
         return None
 
