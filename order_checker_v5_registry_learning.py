@@ -1429,17 +1429,20 @@ class RegistryBasedParser:
         print(f"🎯 RegistryBasedParser инициализирован с {len(self.patterns)} паттернами")
 
     def parse(self, filepath: str) -> List[Dict[str, Any]]:
-        """Парсит документ, ищет совпадения с паттернами реестра
+        """Умный парсер документов
 
-        Строгая логика для бухгалтерских документов:
-        - Сначала берём номер из имени файла
-        - Ищем только совпадения с этим номером
-        - Не ищем случайные числа
+        Логика:
+        1. Извлекаем номер из имени файла
+        2. Ищем этот номер в реестре
+        3. Ищем VIN из реестра в документе
+        4. Ищем госномер из реестра
+        5. Любое совпадение = найден заказ
         """
         print(f"🔎 Анализирую файл: {Path(filepath).name}")
 
         # 1. Извлекаем номер заказа из имени файла
         file_order_number = self._extract_order_number_from_filename(filepath)
+        print(f"📌 Номер из файла: {file_order_number}")
 
         # 2. Извлекаем текст из документа
         text = self._extract_text(filepath)
@@ -1448,46 +1451,101 @@ class RegistryBasedParser:
             print("⚠️ Не удалось извлечь текст из файла")
             return []
 
-        # 3. Если есть номер из файла — ищем только его
+        # 3. Ищем данные в документе
+        found_data = self._find_all_data_in_document(text, file_order_number)
+
+        # 4. Если нашли номер в документе — используем его
+        if 'order_number' in found_data:
+            order_num = found_data['order_number']
+            print(f"✅ Номер {order_num} найден в документе")
+            return [self._create_order(found_data)]
+
+        # 5. Если номер не найден в документе, но есть в имени файла
         if file_order_number and file_order_number in self.patterns:
-            print(f"📌 Номер из файла: {file_order_number}")
+            print(f"⚠️ Номер {file_order_number} не найден в тексте, проверяю по VIN/госномеру...")
 
-            # Ищем только этот номер в документе
-            order_numbers = []
-            escaped_pattern = r'\b' + re.escape(file_order_number) + r'\b'
+            # Ищем хотя бы VIN или госномер
+            if 'vin' in found_data or 'plate' in found_data:
+                print(f"✅ Найден VIN или госномер — связываем с {file_order_number}")
+                found_data['order_number'] = file_order_number
+                found_data['source'] = 'filename_with_data'
+                return [self._create_order(found_data)]
 
-            for match in re.finditer(escaped_pattern, text, re.IGNORECASE):
-                if self._is_valid_order_number(file_order_number, text, match.start()):
-                    order_numbers.append((file_order_number, match.start()))
+            # Если вообще нет данных — используем номер из файла
+            print(f"⚠️ Данных нет, используем номер из файла: {file_order_number}")
+            return [{
+                'order_number': file_order_number,
+                'source': 'filename_only'
+            }]
 
-            if order_numbers:
-                print(f"✅ Номер {file_order_number} найден в документе")
-                return [{
-                    'order_number': file_order_number,
-                    'source': 'filename'
-                }]
-            else:
-                # Номер в имени файла, но не найден в документе
-                print(f"⚠️ Номер {file_order_number} в файле, но не найден в тексте. Используем из имени файла.")
-                return [{
-                    'order_number': file_order_number,
-                    'source': 'filename_fallback'
-                }]
+        print("❌ Номер не найден ни в файле, ни в реестре")
+        return []
 
-        # 4. Fallback: ищем номера из реестра (строго по паттернам)
-        order_numbers, other_data = self._find_patterns_strict(text)
+    def _find_all_data_in_document(self, text: str, target_order: str = None) -> Dict[str, Any]:
+        """Ищет все возможные данные в документе"""
+        found = {}
 
-        if not order_numbers:
-            print("❌ Номера заказов из реестра не найдены")
-            return []
+        # Ищем VIN коды (17 символов)
+        vins = re.findall(r'[A-HJ-NPR-Z0-9]{17}', text, re.IGNORECASE)
+        if vins:
+            # Проверяем каждый VIN из реестра
+            for pattern in self.patterns:
+                if self._is_vin_pattern(pattern):
+                    for vin in vins:
+                        if vin.upper() == pattern.upper():
+                            found['vin'] = vin.upper()
+                            found['vin_source'] = pattern
+                            print(f"  🔑 VIN найден: {vin}")
+                            break
 
-        print(f"📋 Найдено номеров из реестра: {len(order_numbers)}")
+        # Ищем гос. номера (формат А000АА00)
+        plates = re.findall(r'[АВЕКМНОРСТУХавекмнорстух]\d{3}[АВЕКМНОРСТУХавекмнорстух]{2}\d{2,3}', text)
+        if plates:
+            for pattern in self.patterns:
+                if self._is_plate_pattern(pattern):
+                    for plate in plates:
+                        if plate.upper() == pattern.upper():
+                            found['plate'] = plate.upper()
+                            found['plate_source'] = pattern
+                            print(f"  🚗 Госномер найден: {plate}")
+                            break
 
-        # Группируем данные по номерам заказов (строгая логика)
-        orders = self._group_into_orders(order_numbers, other_data, text)
+        # Ищем номер заказа (если target_order указан, ищем только его)
+        if target_order:
+            escaped = r'\b' + re.escape(target_order) + r'\b'
+            if re.search(escaped, text, re.IGNORECASE):
+                found['order_number'] = target_order
+                print(f"  📋 Номер заказа найден: {target_order}")
 
-        print(f"✅ Сформировано заказов: {len(orders)}")
-        return orders
+        # Ищем дату
+        dates = re.findall(r'\d{2}.\d{2}.\d{4}', text)
+        if dates:
+            found['date'] = dates[0]
+
+        return found
+
+    def _is_vin_pattern(self, pattern: str) -> bool:
+        """Проверяет что паттерн похож на VIN"""
+        return len(pattern) == 17 and pattern.isalnum()
+
+    def _is_plate_pattern(self, pattern: str) -> bool:
+        """Проверяет что паттерн похож на госномер"""
+        return bool(re.match(r'^[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3}$', pattern, re.IGNORECASE))
+
+    def _create_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Создаёт структуру заказа из найденных данных"""
+        order = {'order_number': data.get('order_number', '')}
+
+        if 'vin' in data:
+            order['vin'] = data['vin']
+        if 'plate' in data:
+            order['plate'] = data['plate']
+        if 'date' in data:
+            order['date_open'] = data['date']
+
+        order['source'] = data.get('source', 'document')
+
+        return order
 
     def _extract_order_number_from_filename(self, filepath: str) -> Optional[str]:
         """Извлекает номер заказа из имени файла"""
