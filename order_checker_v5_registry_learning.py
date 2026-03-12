@@ -1507,11 +1507,78 @@ class RegistryBasedParser:
         return data
 
     def _find_match_in_registry(self, document_data: Dict[str, Any], file_order: str) -> Optional[Dict[str, Any]]:
-        """Ищет совпадение в реестре по всем полям"""
+        """Ищет совпадение в реестре по всем полям
+
+        Логика:
+        1. Если есть номер из файла — ищем СНАЧАЛА его
+        2. Потом сверяем VIN/plate для подтверждения
+        """
         if not hasattr(self, 'registry_df') or self.registry_df is None:
             if file_order:
                 return self._create_order_from_document(document_data, file_order)
             return None
+
+        # ПРИОРИТЕТ: ищем строку с номером из файла
+        if file_order:
+            for idx, row in self.registry_df.iterrows():
+                # Проверяем все колонки на наличие номера заказа
+                for col in self.registry_df.columns:
+                    cell_value = str(row[col])
+                    # Проверяем точное совпадение или часть значения
+                    if file_order in cell_value:
+                        # Нашли строку с этим номером!
+                        print(f"  ✅ Номер {file_order} найден в реестре (строка {idx})")
+
+                        # Теперь сверяем VIN/plate для подтверждения
+                        score = 20  # За сам факт нахождения номера
+                        matched_fields = {'file_order': file_order}
+
+                        # Проверяем VIN
+                        if 'vin' in document_data and document_data['vin']:
+                            doc_vin = document_data['vin']
+                            # Проверяем есть ли VIN в этой же строке
+                            for col2 in self.registry_df.columns:
+                                cell_val = str(row[col2]).upper()
+                                if doc_vin in cell_val:
+                                    score += 50
+                                    matched_fields['vin'] = doc_vin
+                                    print(f"    🔑 VIN подтверждён: {doc_vin}")
+                                    break
+
+                        # Проверяем госномер
+                        if 'plate' in document_data and document_data['plate']:
+                            doc_plate = document_data['plate'].upper().replace(' ', '')
+                            for col2 in self.registry_df.columns:
+                                cell_val = str(row[col2]).upper().replace(' ', '')
+                                if doc_plate.replace(' ', '') in cell_val:
+                                    score += 30
+                                    matched_fields['plate'] = doc_plate
+                                    print(f"    🚗 Госномер подтверждён: {doc_plate}")
+                                    break
+
+                        # Достаточно совпадений!
+                        if score >= 20:
+                            # Формируем заказ
+                            order = {
+                                'order_number': file_order,
+                                'match_score': score,
+                                'matched_fields': matched_fields
+                            }
+
+                            # Добавляем данные из документа
+                            if 'vin' in document_data:
+                                order['vin'] = document_data['vin']
+                            if 'plate' in document_data:
+                                order['plate'] = document_data['plate']
+                            if 'dates' in document_data and document_data['dates']:
+                                order['date_open'] = document_data['dates'][0]
+                            if 'amounts' in document_data and document_data['amounts']:
+                                order['amount'] = document_data['amounts'][0]
+
+                            return order
+
+        # Если номер из файла не найден в реестре — пробуем по VIN/plate
+        print(f"  ⚠️ Номер {file_order} не найден в реестре, пробую по VIN/plate...")
 
         best_match = None
         best_score = 0
@@ -1535,64 +1602,24 @@ class RegistryBasedParser:
                 doc_plate = document_data['plate'].upper().replace(' ', '')
                 for col in self.registry_df.columns:
                     cell_value = str(row[col]).upper().replace(' ', '')
-                    if doc_plate in cell_value:
+                    if doc_plate.replace(' ', '') in cell_value:
                         score += 30
                         matched_fields['plate'] = doc_plate
                         break
 
-            # Сверяем даты
-            if 'dates' in document_data and document_data['dates']:
-                for doc_date in document_data['dates']:
-                    for col in self.registry_df.columns:
-                        cell_value = str(row[col])
-                        if doc_date in cell_value:
-                            score += 15
-                            matched_fields['date'] = doc_date
-                            break
-
-            # Сверяем суммы (с допуском ±10%)
-            if 'amounts' in document_data and document_data['amounts']:
-                for doc_amount in document_data['amounts']:
-                    try:
-                        doc_amount_float = float(doc_amount)
-                        for col in self.registry_df.columns:
-                            cell_value = str(row[col]).replace(' ', '').replace(',', '.')
-                            try:
-                                cell_amount_float = float(cell_value)
-                                if cell_amount_float > 0:
-                                    diff_pct = abs(doc_amount_float - cell_amount_float) / cell_amount_float * 100
-                                    if diff_pct <= 10:
-                                        score += 10
-                                        matched_fields['amount'] = doc_amount
-                                        break
-                            except:
-                                continue
-                    except:
-                        continue
-
-            # Номер из файла
-            if file_order:
-                for col in self.registry_df.columns:
-                    cell_value = str(row[col])
-                    if file_order in cell_value:
-                        score += 20
-                        matched_fields['file_order'] = file_order
-                        break
-
-            if score >= 30:
+            if score >= 50:  # Минимум VIN или госномер
                 if score > best_score:
                     best_score = score
+                    # Берём номер заказа из этой строки
+                    order_num = str(row['Номер ЗН ']) if 'Номер ЗН ' in row else file_order
                     best_match = {
-                        'order_number': file_order or str(row.iloc[0]),
+                        'order_number': order_num,
                         'match_score': score,
                         'matched_fields': matched_fields
                     }
 
         if best_match:
-            order = {
-                'order_number': best_match['order_number'],
-                'match_score': best_match['match_score']
-            }
+            order = best_match.copy()
 
             if 'vin' in document_data:
                 order['vin'] = document_data['vin']
@@ -1604,6 +1631,11 @@ class RegistryBasedParser:
                 order['amount'] = document_data['amounts'][0]
 
             return order
+
+        # Ничего не нашли — возвращаем хотя бы номер из файла
+        if file_order:
+            print(f"  ⚠️ Совпадений нет, использую номер из файла: {file_order}")
+            return self._create_order_from_document(document_data, file_order)
 
         return None
 
