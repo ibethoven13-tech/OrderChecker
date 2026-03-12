@@ -1357,11 +1357,14 @@ class PatternExtractor:
 
     @staticmethod
     def _is_date(value: str) -> bool:
-        """Проверяет дату"""
+        """Проверяет дату (расширенные форматы)"""
         date_patterns = [
-            r'^\d{2}\.\d{2}\.\d{4}$',
-            r'^\d{4}-\d{2}-\d{2}$',
-            r'^\d{2}/\d{2}/\d{4}$'
+            r'^\d{2}\.\d{2}\.\d{4}$',           # ДД.ММ.ГГГГ
+            r'^\d{2}\.\d{2}\.\d{2}$',           # ДД.ММ.ГГ
+            r'^\d{4}-\d{2}-\d{2}$',             # ГГГГ-ММ-ДД
+            r'^\d{2}/\d{2}/\d{4}$',             # ДД/ММ/ГГГГ
+            r'^\d{2}/\d{2}/\d{2}$',             # ДД/ММ/ГГ
+            r'^\d{2}\.\d{2}\.\d{4}\s\d{2}:\d{2}',  # ДД.ММ.ГГГГ ЧЧ:ММ
         ]
         return any(re.match(p, value.strip()) for p in date_patterns)
 
@@ -1503,42 +1506,132 @@ class RegistryBasedParser:
         return None
 
     def _find_patterns(self, text: str) -> Tuple[List[Tuple[str, int]], Dict[str, List[Tuple[str, int]]]]:
-        """Ищет паттерны в тексте
+        """Ищет паттерны в тексте с расширенной логикой
 
         Returns:
             (список_номеров_заказов, словарь_остальных_данных)
         """
-        # Сначала находим ВСЕ номера заказов из паттернов реестра
+        # 1. Поиск по меткам (Label-Value пары)
+        label_pairs = self._find_label_value_pairs(text)
+
+        # 2. Находим номера заказов из паттернов реестра
         order_numbers = []
-        order_number_patterns = [p for p in self.patterns if p.isdigit() and len(p) >= 6]
+        order_number_patterns = [p for p in self.patterns if p.isdigit() and 4 <= len(p) <= 10]
 
         if order_number_patterns:
             # Ищем по конкретным паттернам из реестра
             for pattern in order_number_patterns:
-                escaped_pattern = re.escape(pattern)
-                for match in re.finditer(escaped_pattern, text):
-                    if self._is_valid_order_number(pattern, text, match.start()):
-                        order_numbers.append((pattern, match.start()))
+                escaped_pattern = r'\b' + re.escape(pattern) + r'\b'
+                for match in re.finditer(escaped_pattern, text, re.IGNORECASE):
+                    found_value = match.group()
+                    if self._is_valid_order_number(found_value, text, match.start()):
+                        order_numbers.append((found_value, match.start()))
         else:
-            # Fallback: ищем любые 6-10 цифр подряд
-            for match in re.finditer(r'\d{6,10}', text):
+            # Fallback: ищем любые 4-10 цифр подряд
+            for match in re.finditer(r'\b\d{4,10}\b', text):
                 order_num = match.group()
                 if self._is_valid_order_number(order_num, text, match.start()):
                     order_numbers.append((order_num, match.start()))
 
-        # Затем ищем остальные паттерны
+        # 3. Ищем остальные паттерны (с нечётким matching)
         other_data = {}
         for pattern in self.patterns:
             # Пропускаем номера заказов (уже нашли)
             if pattern in order_number_patterns:
                 continue
 
+            # Точное совпадение
             escaped_pattern = re.escape(pattern)
             matches = list(re.finditer(escaped_pattern, text, re.IGNORECASE))
             if matches:
                 other_data[pattern] = [(m.group(), m.start()) for m in matches]
+            else:
+                # Нечёткий поиск для опечаток (1-2 символа)
+                fuzzy_matches = self._fuzzy_find(pattern, text, max_distance=2)
+                if fuzzy_matches:
+                    other_data[pattern] = fuzzy_matches
+
+        # 4. Добавляем найденные по меткам
+        for label, (value, pos) in label_pairs.items():
+            if label not in other_data:
+                other_data[label] = []
+            other_data[label].append((value, pos))
 
         return order_numbers, other_data
+
+    def _find_label_value_pairs(self, text: str) -> Dict[str, Tuple[str, int]]:
+        """Ищет пары метка-значение (VIN: X12345, Госномер: А123БВ77)"""
+        pairs = {}
+
+        # Паттерны для разных типов данных
+        patterns = {
+            'vin': [
+                r'(?:VIN[：:\s]*|vin[：:\s]*|ВИН[：:\s]*)([A-HJ-NPR-Z0-9]{17})',
+                r'(?:VIN[：:\s]*|vin[：:\s]*)([A-HJ-NPR-Z0-9]{10,17})'
+            ],
+            'plate': [
+                r'(?:Госномер[：:\s]*|Гос[：:\s]*|Регномер[：:\s]*|Рег[：:\s]*)([АВЕКМНОРСТУХавекмнорстух]\d{3}[АВЕКМНОРСТУХавекмнорстух]{2}\d{2,3})',
+                r'([АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{2,3})'
+            ],
+            'order': [
+                r'(?:№[：:\s]*|Номер[：:\s]*|Заказ[：:\s]*|ЗН[：:\s]*)(\d{4,10})',
+            ],
+            'date': [
+                r'(?:Дата[：:\s]*)(\d{2}.\d{2}.\d{4})',
+                r'(?:Дата[：:\s]*)(\d{4}-\d{2}-\d{2})',
+            ],
+            'amount': [
+                r'(?:Сумма[：:\s]*)([\d\s]+\s*₽|[\d\s]+\s*руб\.?|[\d\s]+)',
+                r'([\d\s]+\s*₽)',
+            ]
+        }
+
+        for field_type, field_patterns in patterns.items():
+            for pattern in field_patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    value = match.group(1) if match.lastindex >= 1 else match.group(0)
+                    pairs[field_type] = (value.strip(), match.start())
+                    break  # Берём первое совпадение
+
+        return pairs
+
+    def _fuzzy_find(self, pattern: str, text: str, max_distance: int = 2) -> List[Tuple[str, int]]:
+        """Нечёткий поиск с опечатками (Levenshtein расстояние)"""
+        matches = []
+
+        # Оптимизация: ищем подстроки похожей длины
+        pattern_len = len(pattern)
+        if pattern_len < 3:
+            return matches
+
+        for i in range(len(text) - pattern_len + 1):
+            substring = text[i:i + pattern_len + max_distance]
+
+            # Простое сравнение с разрешёнными ошибками
+            if self._levenshtein_distance(pattern, substring[:pattern_len]) <= max_distance:
+                matches.append((substring[:pattern_len], i))
+
+        return matches[:5]  # Максимум 5 совпадений
+
+    def _levenshtein_distance(self, s1: str, s2: str) -> int:
+        """Вычисляет расстояние Левенштейна между строками"""
+        if len(s1) < len(s2):
+            return self._levenshtein_distance(s2, s1)
+
+        if len(s2) == 0:
+            return len(s1)
+
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+
+        return previous_row[-1]
 
     def _is_valid_order_number(self, num: str, text: str, pos: int) -> bool:
         """Проверяет что это номер заказа, а не случайные 8 цифр"""
