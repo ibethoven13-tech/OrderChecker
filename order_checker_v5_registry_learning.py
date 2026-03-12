@@ -1432,32 +1432,100 @@ class RegistryBasedParser:
         """Парсит документ, ищет совпадения с паттернами реестра
 
         Строгая логика для бухгалтерских документов:
-        - Номер заказа = разделитель
-        - Данные ищутся только после номера и до следующего номера
+        - Сначала берём номер из имени файла
+        - Ищем только совпадения с этим номером
+        - Не ищем случайные числа
         """
         print(f"🔎 Анализирую файл: {Path(filepath).name}")
 
-        # Извлекаем текст из документа
+        # 1. Извлекаем номер заказа из имени файла
+        file_order_number = self._extract_order_number_from_filename(filepath)
+
+        # 2. Извлекаем текст из документа
         text = self._extract_text(filepath)
 
         if not text:
             print("⚠️ Не удалось извлечь текст из файла")
             return []
 
-        # Ищем номера заказов и остальные данные
-        order_numbers, other_data = self._find_patterns(text)
+        # 3. Если есть номер из файла — ищем только его
+        if file_order_number and file_order_number in self.patterns:
+            print(f"📌 Номер из файла: {file_order_number}")
+
+            # Ищем только этот номер в документе
+            order_numbers = []
+            escaped_pattern = r'\b' + re.escape(file_order_number) + r'\b'
+
+            for match in re.finditer(escaped_pattern, text, re.IGNORECASE):
+                if self._is_valid_order_number(file_order_number, text, match.start()):
+                    order_numbers.append((file_order_number, match.start()))
+
+            if order_numbers:
+                print(f"✅ Номер {file_order_number} найден в документе")
+                return [{
+                    'order_number': file_order_number,
+                    'source': 'filename'
+                }]
+            else:
+                # Номер в имени файла, но не найден в документе
+                print(f"⚠️ Номер {file_order_number} в файле, но не найден в тексте. Используем из имени файла.")
+                return [{
+                    'order_number': file_order_number,
+                    'source': 'filename_fallback'
+                }]
+
+        # 4. Fallback: ищем номера из реестра (строго по паттернам)
+        order_numbers, other_data = self._find_patterns_strict(text)
 
         if not order_numbers:
-            print("❌ Номера заказов не найдены")
+            print("❌ Номера заказов из реестра не найдены")
             return []
 
-        print(f"📋 Найдено номеров заказов: {len(order_numbers)}")
+        print(f"📋 Найдено номеров из реестра: {len(order_numbers)}")
 
         # Группируем данные по номерам заказов (строгая логика)
         orders = self._group_into_orders(order_numbers, other_data, text)
 
         print(f"✅ Сформировано заказов: {len(orders)}")
         return orders
+
+    def _extract_order_number_from_filename(self, filepath: str) -> Optional[str]:
+        """Извлекает номер заказа из имени файла"""
+        import re
+        filename = Path(filepath).stem  # имя без расширения
+
+        # Ищем 4-значное число в имени файла
+        match = re.search(r'\b(\d{4})\b', filename)
+        if match:
+            return match.group(1)
+        return None
+
+    def _find_patterns_strict(self, text: str) -> Tuple[List[Tuple[str, int]], Dict[str, List[Tuple[str, int]]]]:
+        """Строго ищет только паттерны из реестра (не ищет случайные числа)"""
+        order_numbers = []
+        other_data = {}
+
+        # Только паттерны из реестра — никаких fallback!
+        for pattern in self.patterns:
+            if not pattern:
+                continue
+
+            escaped_pattern = r'\b' + re.escape(pattern) + r'\b'
+            matches = list(re.finditer(escaped_pattern, text, re.IGNORECASE))
+
+            if matches:
+                # Проверяем если это номер заказа
+                if pattern.isdigit() and len(pattern) >= 4:
+                    # Это номер заказа
+                    for match in matches:
+                        if self._is_valid_order_number(pattern, text, match.start()):
+                            order_numbers.append((pattern, match.start()))
+                            break  # Только первое совпадение
+                else:
+                    # Это другие данные
+                    other_data[pattern] = [(m.group(), m.start()) for m in matches[:3]]  # Максимум 3
+
+        return order_numbers, other_data
 
     def _extract_text(self, filepath: str) -> Optional[str]:
         """Извлекает текст из файла"""
